@@ -6,10 +6,11 @@ import textwrap
 import yt_dlp
 from whisper import init_whisper, transcribe_file
 import openai
+import pandas as pd
 from pydub import AudioSegment
+from dotenv import load_dotenv
+load_dotenv()
 
-audio_filename = str(uuid.uuid4())
-# audio_filename = "c83f1f07-e8a0-4c61-b994-04bb994c4882"
 
 def pretty_print(text, width):
     lines = text.splitlines()
@@ -17,7 +18,7 @@ def pretty_print(text, width):
     wrapped_text = '\n'.join(wrapped_lines)
     print(wrapped_text)
 
-def download_audio(url):
+def download_audio(audio_filename, url):
     # Download from YouTube
     ydl_opts = {
         'outtmpl': audio_filename,
@@ -28,7 +29,6 @@ def download_audio(url):
             'preferredquality': '96',
         }],
     }
-    print(url)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     
@@ -44,10 +44,10 @@ def download_audio(url):
 
     subprocess.run(command)
 
-def summarize_bullet_points(transcript):
-    client = openai.OpenAI(api_key="")
-    system_prompt = "You are a helpful assistant, whose sole job is to take transcripts and summarize them. Every time you see the word sponsored or this video is sponsored, you should ignore everything that follows as it is not part of the main content."
-    summarize_prompt = "Summarize the following transcript into a list of 20 bullet points.\n\n\nText: {transcript}:"
+def summarize_bullet_points(title, transcript):
+    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    system_prompt = "You are a helpful assistant, whose sole job is to take transcripts and summarize them. You are helping your boss become rich and successful."
+    summarize_prompt = "Summarize the following transcript. Make it as useful as possible in the context of self improvement and getting rich, this is the title of the video {title}\n\n\nThis is the Text transcript: {transcript}:"
 
     return client.chat.completions.create(
         model="gpt-4-1106-preview",
@@ -58,7 +58,7 @@ def summarize_bullet_points(transcript):
             },
             {
                 "role": "user",
-                "content": summarize_prompt.format(num_bullet_points=15, transcript=transcript),
+                "content": summarize_prompt.format(title=title, transcript=transcript),
             }
         ],
         temperature=0.1,
@@ -68,31 +68,20 @@ def summarize_bullet_points(transcript):
         presence_penalty=0
     )
 
-def whisper_transcription(chunk_filename):
+def whisper_transcription(model, enc, chunk_filename):
     print("Transcribing ", chunk_filename, "...")
-    model, enc = init_whisper("large-v2", batch_size=1)
     output = transcribe_file(model, enc, chunk_filename)
-    with open(audio_filename+"_transcription.txt", "a") as text_file:
-        text_file.write(output)
     return output
     
-def summarize_youtube(transcription):
-    response = summarize_bullet_points(transcription)
+def summarize_youtube(title, transcription):
+    response = summarize_bullet_points(title, transcription)
     summary = response.choices[0].message.content
-    with open(audio_filename+"_summary.txt", "w") as text_file:
-        text_file.write(summary)
     return summary
 
-
-def get_transcription():
-    with open (audio_filename+"_transcription.txt", "r") as file:
-        data = file.read()
-    return data
-
-def chunk_big_file():
+def chunk_big_file(audio_filename):
     audio = AudioSegment.from_mp3(audio_filename+"_mono.mp3")
     audio_length = len(audio) / 1000
-    chunk_size = 7 * 60  # chunk size in seconds
+    chunk_size = 1 * 60
     num_chunks = int(audio_length // chunk_size)
     remaining_time = audio_length % chunk_size
 
@@ -112,37 +101,50 @@ def chunk_big_file():
 
     return num_chunks
 
-
-def cleanup(num_chunks):
-    os.remove(audio_filename+".mp3")
-    os.remove(audio_filename+"_mono.mp3")
+def cleanup(audio_filename, num_chunks):
+    try:
+        os.remove(audio_filename+".mp3")
+        os.remove(audio_filename+"_mono.mp3")
+    except:
+        pass
     for i in range(num_chunks):
-        os.remove(f"chunk_{i}.mp3")
+        try:
+            os.remove(f"chunk_{i}.mp3")
+        except:
+            continue
+
 
 def main():
-    # parser = argparse.ArgumentParser(description='Summarize YouTube videos.')
-    # parser.add_argument('--url', required=False, type=str, help='The URL of the YouTube video to summarize.')
-    # args = parser.parse_args()
-    # url = args.url
-    # if not url:
-    #     url = input("Please enter the URL of the YouTube video to summarize: ")
+    parser = argparse.ArgumentParser(description='Summarize YouTube videos.')
+    parser.add_argument('--url', required=False, type=str, help='The URL of the YouTube video to summarize.')
+    args = parser.parse_args()
+    url = args.url
+    if not url:
+        url = input("Please enter the URL of the YouTube video to summarize: ")
     
-    # print("Donwloading audio from YouTube...")
-    # download_audio(url)
+    video_title = str(uuid.uuid4())
+    print("Donwloading audio from YouTube...")
+    download_audio(video_title, url)
     print("chunking audio...")
-    num_chunks = chunk_big_file()
-    num_chunks = 7
-    print("Transcribing audio... Processing ", num_chunks, " chunks")
+    num_chunks = chunk_big_file(video_title)
+    print("Initializing whisper...")
+    model, enc = init_whisper("large-v2", batch_size=1)
+    print("Transcribing audio... with", num_chunks, " chunks")
     for i in range(num_chunks):
         chunk_filename = f"chunk_{i}.mp3"
-        whisper_transcription(chunk_filename)
+        output = whisper_transcription(model, enc, chunk_filename)
+        with open(video_title+"_transcription.txt", "a") as text_file:
+            text_file.write(output)
 
-    print("Summarizing with GPT-4...")
-    summary = summarize_youtube(get_transcription())
+        print("Summarizing with GPT-4...")
+        with open (video_title+"_transcription.txt", "r") as file:
+            data = file.read()
+        summary = summarize_youtube(video_title, data)
+        with open(video_title+"_summary.txt", "w") as text_file:
+            text_file.write(summary)
 
-    print("Cleaning up...: ")
-    cleanup(num_chunks)
-    pretty_print(summary, 80)
+        print("Cleaning up...: ")
+        cleanup(video_title, num_chunks)
 
 if __name__ == "__main__":
     main()
