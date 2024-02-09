@@ -8,3 +8,5 @@ pydub
 google-api-python-client
 pandas
 python-dotenv
+qdrant-client>=1.1.1
+sentence-transformers
